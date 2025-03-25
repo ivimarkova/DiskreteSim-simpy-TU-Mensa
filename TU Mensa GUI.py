@@ -6,7 +6,8 @@ import matplotlib.pyplot as plt
 import tkinter as tk
 from tkinter import messagebox
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import random
+import threading
+import time
 
 # Parameter
 SIM_TIME = 120  # Minuten
@@ -16,33 +17,40 @@ MEAN_SERVICE = 3
 #GUI
 root=tk.Tk()
 root.title("Simulation der TU Sofia Mensa während der Mittagspause")
-root.geometry("600x600")
+root.geometry("800x700")
 
 #Animation
 canvas=tk.Canvas(root, width=400, height=200, bg="white")
-canvas.pack()
+canvas.pack(pady=10)
+
+control_frame=tk.Frame(root)
+control_frame.pack(pady=10)
 
 #List, wartende Menschen als Kreise
 people=[]
+student_objects=[]
 
 #Bereich
-output_text=tk.Text(root, height=5, width=60)
-output_text.pack()
+output_text=tk.Text(root, height=5, width=80)
+output_text.pack(pady=10)
+
+input_frame=tk.Frame(root)
+input_frame.pack()
 
 #Eingabefelder
-tk.Label(root, text="Simulationszeit (Minuten):").pack()
-entry_time = tk.Entry(root)
-entry_time.pack()
+tk.Label(input_frame, text="Simulationszeit (Minuten):").grid(row=0, column=0, padx=5)
+entry_time = tk.Entry(input_frame)
+entry_time.grid(row=0, column=1, padx=5)
 entry_time.insert(0, str(SIM_TIME))
 
-tk.Label(root, text="Mittlere Ankunftszeit:").pack()
-entry_arrival = tk.Entry(root)
-entry_arrival.pack()
+tk.Label(input_frame, text="Mittlere Ankunftszeit:").grid(row=1, column=0, padx=5)
+entry_arrival = tk.Entry(input_frame)
+entry_arrival.grid(row=1, column=1, padx=5)
 entry_arrival.insert(0, str(MEAN_ARRIVAL))
 
-tk.Label(root, text="Mittlere Servicezeit").pack()
-entry_service = tk.Entry(root)
-entry_service.pack()
+tk.Label(input_frame, text="Mittlere Servicezeit:").grid(row=2, column=0, padx=5)
+entry_service = tk.Entry(input_frame)
+entry_service.grid(row=2, column=1, padx=5)
 entry_service.insert(0, str(MEAN_SERVICE))
 
 #Dynamisch var für Live-Updates
@@ -50,20 +58,67 @@ wait_times=[]
 queue_lenghts =[]
 queue_count=0 #Menschen in der Schlange
 running =False #Flag
+paused=False
+canvas_plot=None
+simulation_speed=1000#ms zw. Updates
+
+speed_frame=tk.Frame(root)
+speed_frame.pack(pady=5)
+tk.Label(speed_frame, text="Animationsgeschwindigkeit:").pack(side=tk.LEFT)
+speed_slider = tk.Scale(speed_frame, from_=500, to=3000, orient=tk.HORIZONTAL,
+                        command=lambda v: set_speed(int(float(v))))
+speed_slider.set(simulation_speed)
+speed_slider.pack(side=tk.LEFT)
+
+def set_speed(value):
+    global simulation_speed
+    simulation_speed = value
 
 def update_animation():#Position der Wartenden auf dem Canvas
     if not running:
         return
     canvas.delete("all")
+    #statische Elemente
+    canvas.create_rectangle(50,100,150,200, fill="lightgreen", outline="black")#Mensaarbeiter
+    canvas.create_rectangle(400,100,500,200, fill="pink", outline="black")#Kasse
+    canvas.create_text(100,90, text="Kellner")
+    canvas.create_text(450,90,text="Kasse")
+    #Weg
+    canvas.create_line(150, 150, 400, 150, width=3, fill="gray")
+
+    canvas.create_rectangle(180, 120, 370, 180, outline="orange", dash=(2,2))
+    canvas.create_text(275, 110, text="Warteschlange")
     #Personen als Kreise
     for i, person in enumerate(people):
-        x=50 +i*30
-        y=100
-        canvas.create_oval(x,y,x+20, y+20, fill='green')
-    root.after(500, update_animation)#ms wiederholen
+        x=200 +i*30
+        if x>350:
+            x=350
+        y=150
+        head=canvas.create_oval(x-10,y-25,x+10, y-5, fill='green', outline="black")
+        body = canvas.create_line(x, y-5, x, y+15, width=2)
 
-def run_simulation():
-    global queue_count, people, running
+        left_arm = canvas.create_line(x-10, y, x-5, y+5, width=2)
+        right_arm = canvas.create_line(x+10, y, x+5, y+5, width=2)
+
+        left_leg = canvas.create_line(x, y+15, x-5, y+25, width=2)
+        right_leg = canvas.create_line(x, y+15, x+5, y+25, width=2)
+        student_objects.append([head, body, left_arm, right_arm, left_leg, right_leg])
+    if not paused:
+        root.after(simulation_speed, update_animation)
+def toggle_pause():
+    global paused
+    paused = not paused
+    if not paused and running:
+        update_animation()
+    pause_button.config(text="Fortsetzen" if paused else "Pause")
+
+def stop_simulation():
+    global running
+    running = False
+    output_text.insert(tk.END, "\nSimulation gestoppt")
+
+def simulation_thread():
+    global queue_count, people, running, canvas_plot
     try:
         sim_time=int(entry_time.get())
         mean_arrival=float(entry_arrival.get())
@@ -76,13 +131,23 @@ def run_simulation():
         queue_lenghts.clear()
         queue_count=0
         people.clear()
+        student_objects.clear()
+
+        running=True #Start
+        paused=False
+        root.after(0, update_animation)
+
         def student(env, food_counter, cashier):
             global queue_count
             arrival_time = env.now
 
             queue_count+=1
             people.append(queue_count)
-
+            root.after(0, update_animation)
+            while paused and running:
+                time.sleep(0.1)
+                if not running:
+                    return
             # Phase 1: Essensausgabe
             with food_counter.request() as req:
                 yield req
@@ -97,6 +162,7 @@ def run_simulation():
             queue_count-=1
             if people:
                 people.pop(0)
+            root.after(0, update_animation)
 
         def setup(env):
             food_counter = simpy.Resource(env, capacity=2)
@@ -109,28 +175,48 @@ def run_simulation():
         env.process(setup(env))
         env.run(until=sim_time)
 
+        running=False#Stop Animation nach der Simulation
+
         avg_wait=np.mean(wait_times) if wait_times else 0
         max_queue=max(queue_lenghts) if queue_lenghts else 0
 
-        output_text.delete(1.0, tk.END)
-        output_text.insert(tk.END, f"Wartezeit: {avg_wait:.1f}Min. \n")
-        output_text.insert(tk.END, f"Max. Warteschlange: {max_queue} Personen \n")
-
+        root.after(
+            0, lambda:output_text.delete(1.0, tk.END))
+        root.after(0, lambda: output_text.insert(tk.END,
+            f"Durchschnittliche Wartezeit: {avg_wait:.1f} Minuten\n" +
+            f"Maximale Warteschlangenlänge: {max_queue} Personen\n" +
+            f"Gesamtzahl der Kunden: {len(wait_times)}"))
         # Visualisierung
-        fig, ax = plt.subplots(figsize=(5,3))
-        ax.hist(wait_times, bins=20, edgecolor='black')
+        if canvas_plot:
+            canvas_plot.get_tk_widget().pack_forget()#Alte Grafik
+        fig, ax = plt.subplots(figsize=(6,4))
+        ax.hist(wait_times, bins=20, edgecolor='black', color='yellow')
         ax.set_title("Verteilung der Wartezeiten ")
         ax.set_xlabel("Minuten")
         ax.set_ylabel("Anzahl Studierende")
 
         canvas_plot=FigureCanvasTkAgg(fig, master=root)
         canvas_plot.draw()
-        canvas_plot.get_tk_widget().pack()
+        root.after(0, lambda:canvas_plot.get_tk_widget().pack())
 
     except ValueError as e:
-        messagebox.showerror("Fehler", str(e))
+        root.after(0,lambda:messagebox.showerror("Fehler", str(e)))
+def run_simulation():
+    if not running:
+        thread=threading.Thread(target=simulation_thread)
+        thread.start()
 
+# Buttons
+button_frame = tk.Frame(root)
+button_frame.pack(pady=10)
 
-tk.Button(root, text="Simulation starten", command=run_simulation).pack()
+start_button = tk.Button(button_frame, text="Simulation starten", command=run_simulation)
+start_button.pack(side=tk.LEFT, padx=5)
+
+pause_button = tk.Button(button_frame, text="Pause", command=toggle_pause)
+pause_button.pack(side=tk.LEFT, padx=5)
+
+stop_button = tk.Button(button_frame, text="Stopp", command=stop_simulation)
+stop_button.pack(side=tk.LEFT, padx=5)
 
 root.mainloop()
